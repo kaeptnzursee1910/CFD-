@@ -46,9 +46,13 @@ class History:
     kinetic_energy: list = field(default_factory=list)
     fx: list = field(default_factory=list)
     fy: list = field(default_factory=list)
+    extra: dict = field(default_factory=dict)
 
     def as_arrays(self) -> dict:
-        return {k: np.asarray(v) for k, v in self.__dict__.items()}
+        out = {k: np.asarray(v) for k, v in self.__dict__.items() if k != "extra"}
+        for k, v in self.extra.items():
+            out[k] = np.asarray(v)
+        return out
 
 
 class Simulation:
@@ -77,12 +81,23 @@ class Simulation:
         konjugierte Gradienten.
     compute_forces : bool
         Kräfte auf innere Hindernisse in jedem Schritt aufzeichnen.
+    models : list, optional
+        Physikalische Zusatzmodelle (Turbulenz, Temperatur, Skalare, ...), siehe
+        :mod:`cfd2d.models`. Sie werden über Hooks in jeden Zeitschritt eingebunden.
+    body_force : (fx, fy)
+        Konstante Volumenkraft pro Masse, z. B. ein vorgegebenes Druckgefälle.
+    flow_rate : float, optional
+        Soll-Geschwindigkeit (Mittelwert von u) für periodische Kanäle. Die
+        antreibende Kraft wird wie bei OpenFOAM ``meanVelocityForce`` in jedem
+        Schritt nachgeregelt.
     """
 
     def __init__(self, grid: Grid, bcs: dict[str, BoundaryCondition], nu: float,
                  scheme: str = "ab2", gamma: float | str = "auto", tau: float = 0.5,
                  dt: float | None = None, pressure_solver: str = "direct",
-                 compute_forces: bool = False, initial_velocity: tuple = (0.0, 0.0)):
+                 compute_forces: bool = False, initial_velocity: tuple = (0.0, 0.0),
+                 models: list | None = None, body_force: tuple = (0.0, 0.0),
+                 flow_rate: float | None = None):
         if nu <= 0:
             raise ValueError("Die Viskosität muss positiv sein.")
         if scheme not in ("ab2", "euler"):
@@ -119,6 +134,21 @@ class Simulation:
 
         self.u_fluid = grid.u_fluid_faces()
         self.v_fluid = grid.v_fluid_faces()
+        self.periodic = self.boundary.periodic
+        if self.periodic:
+            self.u_fluid[0, :] = False  # Fläche 0 ist eine Kopie von Fläche nx
+
+        # Viskositätsfeld (molekular + turbulent), Volumenkräfte, Modelle
+        self.nu_t = np.zeros((nx + 2, ny + 2))
+        self.nu_eff = np.full((nx + 2, ny + 2), self.nu)
+        self.variable_viscosity = False
+        self.body_force = (float(body_force[0]), float(body_force[1]))
+        self.flow_rate = flow_rate
+        self.flow_force = 0.0  # nachgeregeltes Druckgefälle bei flow_rate
+        self.scalars: dict = {}
+        self.models = []
+        for m in models or []:
+            self.add_model(m)
 
         # Anfangsbedingung
         u0, v0 = initial_velocity
@@ -141,9 +171,22 @@ class Simulation:
     # ------------------------------------------------------------------ #
     # Randbedingungen
     # ------------------------------------------------------------------ #
+    def add_model(self, model) -> None:
+        """Bindet ein Zusatzmodell ein (Turbulenz, Temperatur, Skalar ...)."""
+        model.attach(self)
+        self.models.append(model)
+
+    def model(self, kind: str):
+        """Liefert das erste Modell eines Typs (``model.kind``) oder None."""
+        for m in self.models:
+            if getattr(m, "kind", None) == kind:
+                return m
+        return None
+
     def _apply_bc(self) -> None:
         self.boundary.apply(self.u, self.v)
-        kernels.obstacle_bc(self.u, self.v, self.grid.fluid, self.grid.nx, self.grid.ny)
+        kernels.obstacle_bc(self.u, self.v, self.grid.fluid, self.grid.nx, self.grid.ny,
+                            self.periodic)
 
     def _project_initial(self) -> None:
         """Macht das Anfangsfeld divergenzfrei (ein Projektionsschritt mit dt = 1)."""
@@ -165,14 +208,20 @@ class Simulation:
         g = self.grid
         umax = max(np.abs(self.u).max(), 1e-12)
         vmax = max(np.abs(self.v).max(), 1e-12)
-        dt_visc = 0.5 / (self.nu * (1.0 / g.dx**2 + 1.0 / g.dy**2))
+        nu_max = float(self.nu_eff.max()) if self.variable_viscosity else self.nu
+        dt_visc = 0.5 / (nu_max * (1.0 / g.dx**2 + 1.0 / g.dy**2))
         dt_conv = min(g.dx / umax, g.dy / vmax)
         if self.scheme == "ab2":
             # AB2 ist auf der negativen reellen Achse nur bis lambda*dt = -1 stabil
             # (Euler bis -2), daher halbes Diffusionslimit. Für Konvektion ist es etwas restriktiver.
             dt_visc *= 0.5
             dt_conv *= 0.8
-        return self.tau * min(dt_visc, dt_conv)
+        dt = self.tau * min(dt_visc, dt_conv)
+        for m in self.models:
+            lim = m.dt_limit(self)
+            if lim is not None:
+                dt = min(dt, self.tau * lim)
+        return dt
 
     def _auto_gamma(self, dt: float) -> float:
         """Automatischer Upwind-Anteil.
@@ -189,7 +238,8 @@ class Simulation:
         if self.scheme == "euler":
             cfl = max(umax * dt / g.dx, vmax * dt / g.dy)
             return float(min(1.0, max(0.05, 1.2 * cfl)))
-        re_cell = max(umax * g.dx, vmax * g.dy) / self.nu
+        nu_ref = float(self.nu_eff[self.grid.fluid].min()) if self.variable_viscosity else self.nu
+        re_cell = max(umax * g.dx, vmax * g.dy) / nu_ref
         return float(min(1.0, max(0.05, 0.015 * re_cell)))
 
     # ------------------------------------------------------------------ #
@@ -201,11 +251,16 @@ class Simulation:
         dx, dy = g.dx, g.dy
         F, G = self.F, self.G
 
+        if self.periodic:
+            F[0, :] = F[nx, :]
         div = (F[1:, 1:-1] - F[:-1, 1:-1]) / dx + (G[1:-1, 1:] - G[1:-1, :-1]) / dy
         p_int = self.pressure.solve(div / dt)
         p = self.p
         p[:] = 0.0
         p[1:-1, 1:-1] = p_int
+        if self.periodic:
+            p[0, :] = p[nx, :]
+            p[nx + 1, :] = p[1, :]
 
         # Innere Fluidflächen
         uf = self.u_fluid[1:nx, 1:ny + 1]
@@ -214,6 +269,13 @@ class Simulation:
         vf = self.v_fluid[1:nx + 1, 1:ny]
         corr = G[1:nx + 1, 1:ny] - dt * (p[1:nx + 1, 2:ny + 1] - p[1:nx + 1, 1:ny]) / dy
         self.v[1:nx + 1, 1:ny] = np.where(vf, corr, G[1:nx + 1, 1:ny])
+
+        if self.periodic:
+            uf = self.u_fluid[nx, 1:ny + 1]
+            corr = F[nx, 1:ny + 1] - dt * (p[1, 1:ny + 1] - p[nx, 1:ny + 1]) / dx
+            self.u[nx, 1:ny + 1] = np.where(uf, corr, F[nx, 1:ny + 1])
+            self.u[0, :] = self.u[nx, :]
+            return
 
         # Randflächen: vorgegebene Geschwindigkeit, an Ausströmrändern mit Druckkorrektur
         d = self.pressure.dirichlet
@@ -233,12 +295,19 @@ class Simulation:
         g = self.grid
         t0 = time.perf_counter()
         self._apply_bc()
+        for m in self.models:
+            m.pre_momentum(self)
+        if self.variable_viscosity:
+            np.add(self.nu, self.nu_t, out=self.nu_eff)
 
         dt = self.compute_dt()
         self.gamma = self._auto_gamma(dt) if self.gamma_setting == "auto" else float(self.gamma_setting)
 
         kernels.momentum_tendencies(self.u, self.v, g.fluid, g.nx, g.ny, g.dx, g.dy,
-                                    self.nu, self.gamma, self.hu, self.hv)
+                                    self.nu_eff, self.variable_viscosity, self.gamma,
+                                    self.periodic, self.hu, self.hv)
+        for m in self.models:
+            m.momentum_source(self, self.hu, self.hv)
 
         if self.scheme == "ab2" and self.hu_old is not None:
             r = dt / self.dt_old
@@ -255,10 +324,23 @@ class Simulation:
         self.G[:] = self.v
         self.F[self.u_fluid] += dt * Hu[self.u_fluid]
         self.G[self.v_fluid] += dt * Hv[self.v_fluid]
+        # Volumenkraft (konstant oder geregelt) explizit, nicht über AB2: Sonst bildet der
+        # Volumenstromregler mit der AB2-Extrapolation eine ungedämpfte 2-Schritt-Schwingung.
+        fx = self.body_force[0] + self.flow_force
+        fy = self.body_force[1]
+        if fx:
+            self.F[self.u_fluid] += dt * fx
+        if fy:
+            self.G[self.v_fluid] += dt * fy
         self.boundary.extrapolate_outflow_predictor(self.F, self.G)
 
         self._solve_pressure_and_correct(dt)
         self._apply_bc()
+        if self.flow_rate is not None:
+            self._control_flow_rate(dt)
+
+        for m in self.models:
+            m.post_step(self, dt)
 
         if self.scheme == "ab2":
             if self.hu_old is None:
@@ -285,6 +367,28 @@ class Simulation:
 
         self._record()
 
+    def bulk_velocity(self) -> float:
+        """Mittlere Geschwindigkeit u über alle Fluidflächen (periodischer Kanal)."""
+        m = self.u_fluid[1:self.grid.nx + 1, 1:-1]
+        return float(self.u[1:self.grid.nx + 1, 1:-1][m].mean())
+
+    def _control_flow_rate(self, dt: float) -> None:
+        """Regelt den Volumenstrom auf ``flow_rate`` (wie OpenFOAM meanVelocityForce)."""
+        du = self.flow_rate - self.bulk_velocity()
+        self.u[self.u_fluid] += du
+        if self.periodic:
+            self.u[0, :] = self.u[self.grid.nx, :]
+        self.flow_force += du / dt
+        if self.grid.solid.any():
+            # Mit Hindernissen ist eine gleichmäßige Korrektur nicht divergenzfrei: neu projizieren
+            self.F[:] = self.u
+            self.G[:] = self.v
+            self.boundary.extrapolate_outflow_predictor(self.F, self.G)
+            p_save = self.p.copy()
+            self._solve_pressure_and_correct(1.0)
+            self.p[:] = p_save
+        self._apply_bc()
+
     def _record(self) -> None:
         h = self.history
         h.step.append(self.n)
@@ -297,6 +401,11 @@ class Simulation:
             fx, fy = self.obstacle_forces()
             h.fx.append(fx)
             h.fy.append(fy)
+        if self.flow_rate is not None:
+            h.extra.setdefault("antriebskraft", []).append(self.flow_force)
+        for m in self.models:
+            for k, val in (m.monitors(self) or {}).items():
+                h.extra.setdefault(k, []).append(val)
 
     # ------------------------------------------------------------------ #
     # Simulationsschleife

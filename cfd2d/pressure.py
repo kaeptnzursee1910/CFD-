@@ -21,7 +21,6 @@ from __future__ import annotations
 import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
-from scipy import ndimage
 
 from .boundary import DomainBoundary
 from .grid import Grid
@@ -74,6 +73,18 @@ class PressureSolver:
         diag[:, :-1][both_y] += dy2
         diag[:, 1:][both_y] += dy2
 
+        # Periodizität in x: Zelle nx koppelt mit Zelle 1
+        self.periodic = boundary.periodic
+        if self.periodic:
+            both_p = fluid[-1, :] & fluid[0, :]
+            a = idx[-1, :][both_p]
+            b = idx[0, :][both_p]
+            rows += [a, b]
+            cols += [b, a]
+            vals += [np.full(a.size, -dx2), np.full(a.size, -dx2)]
+            diag[-1, :][both_p] += dx2
+            diag[0, :][both_p] += dx2
+
         # Dirichlet-Bedingung an Ausströmrändern: Geisterwert = -p, also +2/h^2 auf der Diagonale
         self.dirichlet = {s: boundary.outflow_mask(s) for s in ("left", "right", "bottom", "top")}
         diag[0, :][self.dirichlet["left"]] += 2 * dx2
@@ -88,14 +99,23 @@ class PressureSolver:
         has_dir[:, -1] |= self.dirichlet["top"]
 
         # Zusammenhangsgebiete ohne Dirichlet-Rand: je eine Zelle festhalten
-        labels, ncomp = ndimage.label(fluid)
+        # Zusammenhangskomponenten über den Graphen der Kopplungen (berücksichtigt Periodizität)
+        from scipy.sparse.csgraph import connected_components
+
+        adj = sp.csr_matrix((np.ones(sum(r.size for r in rows)),
+                             (np.concatenate(rows) if rows else np.zeros(0, int),
+                              np.concatenate(cols) if cols else np.zeros(0, int))), shape=(n, n))
+        ncomp, comp_of = connected_components(adj, directed=False)
+        labels = np.zeros((nx, ny), dtype=np.int64)
+        labels[fluid] = comp_of + 1
         self.labels = labels
         self.neumann_components = []
+        dir_comps = set(np.unique(labels[has_dir & fluid]).tolist())
         for c in range(1, ncomp + 1):
-            comp = labels == c
-            if not np.any(has_dir & comp):
-                first = np.argwhere(comp)[0]
-                diag[first[0], first[1]] += dx2
+            if c not in dir_comps:
+                first = np.argmax(comp_of == c - 1)
+                fi, fj = np.argwhere(idx == first)[0]
+                diag[fi, fj] += dx2
                 self.neumann_components.append(c)
 
         d = diag[fluid]

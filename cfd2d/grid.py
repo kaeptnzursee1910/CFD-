@@ -40,6 +40,7 @@ class Grid:
 
         self.fluid = np.zeros((self.nx + 2, self.ny + 2), dtype=np.bool_)
         self.fluid[1:-1, 1:-1] = True
+        self.periodic_x = False
 
     # ------------------------------------------------------------------ #
     # Koordinaten
@@ -71,6 +72,12 @@ class Grid:
     # ------------------------------------------------------------------ #
     # Hindernisse
     # ------------------------------------------------------------------ #
+    def interior_solid_padded(self) -> np.ndarray:
+        """Festkörper-Maske mit Geisterschicht, Gebietsrand (Geisterzellen) ausgenommen."""
+        s = ~self.fluid.copy()
+        s[0, :] = s[-1, :] = s[:, 0] = s[:, -1] = False
+        return s
+
     @property
     def solid(self) -> np.ndarray:
         """Festkörperzellen im Inneren des Gebiets, Form (nx, ny)."""
@@ -116,6 +123,14 @@ class Grid:
         if removed:
             self.fluid[1:-1, 1:-1] &= ~enclosed
         return removed
+
+    def set_periodic_x(self) -> None:
+        """Periodizität in x: Die Geisterspalten spiegeln die gegenüberliegenden Zellen."""
+        self.periodic_x = True
+        self.fluid[0, :] = self.fluid[self.nx, :]
+        self.fluid[self.nx + 1, :] = self.fluid[1, :]
+        self.fluid[:, 0] = False
+        self.fluid[:, -1] = False
 
     # ------------------------------------------------------------------ #
     # Flächenklassifikation

@@ -14,6 +14,8 @@ Jede der vier Seiten (``left``, ``right``, ``bottom``, ``top``) bekommt eine
 ``outflow``
     Ausströmrand: kein Gradient der Geschwindigkeit, Druck p = 0
     (Dirichlet-Bedingung für die Druckgleichung).
+``periodic``
+    Periodischer Rand (OpenFOAM: ``cyclic``). Nur paarweise links und rechts.
 """
 
 from __future__ import annotations
@@ -26,12 +28,13 @@ from .grid import Grid
 
 SIDES = ("left", "right", "bottom", "top")
 SIDE_NAMES_DE = {"left": "links", "right": "rechts", "bottom": "unten", "top": "oben"}
-KINDS = ("noslip", "slip", "inflow", "outflow")
+KINDS = ("noslip", "slip", "inflow", "outflow", "periodic")
 KIND_NAMES_DE = {
     "noslip": "Haftende Wand",
     "slip": "Reibungsfreie Wand",
     "inflow": "Einströmung",
     "outflow": "Ausströmung",
+    "periodic": "Periodisch",
 }
 
 
@@ -95,6 +98,15 @@ class DomainBoundary:
             raise ValueError(f"Randbedingungen fehlen für: {missing}")
         self.grid = grid
         self.bcs = bcs
+        pl = bcs["left"].kind == "periodic"
+        pr = bcs["right"].kind == "periodic"
+        if pl != pr:
+            raise ValueError("Periodische Ränder müssen links UND rechts gesetzt werden.")
+        if bcs["bottom"].kind == "periodic" or bcs["top"].kind == "periodic":
+            raise ValueError("Periodische Ränder werden nur in x-Richtung (links/rechts) unterstützt.")
+        self.periodic = pl
+        if self.periodic:
+            grid.set_periodic_x()
         fl = grid.fluid
         nx, ny = grid.nx, grid.ny
 
@@ -132,6 +144,11 @@ class DomainBoundary:
         """Setzt alle Randwerte auf u und v."""
         g = self.grid
         nx, ny = g.nx, g.ny
+
+        if self.periodic:
+            u[0, :] = u[nx, :]
+            v[0, :] = v[nx, :]
+            v[nx + 1, :] = v[1, :]
 
         # ---------- links (x = 0): Normalkomponente u[0, j], tangential v[0, :] ----------
         bc = self.bcs["left"]
@@ -199,8 +216,9 @@ class DomainBoundary:
             u[:, ny + 1] = u[:, ny]
 
         # Randflächen, hinter denen ein Hindernis liegt, sind geschlossen
-        u[0, 1:ny + 1][~self.open["left"]] = 0.0
-        u[nx, 1:ny + 1][~self.open["right"]] = 0.0
+        if not self.periodic:
+            u[0, 1:ny + 1][~self.open["left"]] = 0.0
+            u[nx, 1:ny + 1][~self.open["right"]] = 0.0
         v[1:nx + 1, 0][~self.open["bottom"]] = 0.0
         v[1:nx + 1, ny][~self.open["top"]] = 0.0
 
@@ -208,6 +226,8 @@ class DomainBoundary:
         """Setzt die vorläufigen Geschwindigkeiten an Ausströmrändern (kein Gradient)."""
         g = self.grid
         nx, ny = g.nx, g.ny
+        if self.periodic:
+            F[0, :] = F[nx, :]
         if self.bcs["left"].kind == "outflow":
             m = self.open["left"]
             F[0, 1:ny + 1][m] = F[1, 1:ny + 1][m]
