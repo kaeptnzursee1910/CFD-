@@ -241,6 +241,101 @@ def rayleigh_benard(ra: float = 1e4, pr: float = 0.71, aspect: float = 4.032, ny
                 float(np.sqrt(ra / pr)), info)
 
 
+# ---------------------------------------------------------------------- #
+# 8) Turbulente Kanalströmung (RANS k-omega SST)
+# ---------------------------------------------------------------------- #
+def dean_cf(re_b: float) -> float:
+    """Reibungsbeiwert nach Dean (1978): Cf = 0.073 Re_b^(-1/4), Re_b = U_b * 2h / nu."""
+    return 0.073 * re_b ** -0.25
+
+
+def turbulent_channel(re_tau: float = 180.0, ny: int | None = None, y_plus_1: float = 1.0,
+                      model: str = "kOmegaSST", t_end: float = 400.0,
+                      steady_tol: float | None = 1e-6, **num) -> Case:
+    """Periodischer Kanal (Halbhöhe h = 1, Wände bei y = 0 und y = 2), U_b = 1.
+
+    Re_b wird aus Re_tau über die Dean-Korrelation Re_tau = 0.09 Re_b^0.88 bestimmt,
+    ny so gewählt, dass die erste Zelle bei y+ ≈ y_plus_1 liegt.
+    """
+    from .turbulence import TURBULENCE_MODELS
+
+    re_b = (re_tau / 0.09) ** (1 / 0.88)
+    nu = 2.0 / re_b
+    if ny is None:
+        ny = int(np.ceil(re_tau / y_plus_1))
+        ny += ny % 2
+    grid = Grid(4, ny, 0.5, 2.0)
+    bcs = {"left": BC("periodic"), "right": BC("periodic"), "bottom": BC("noslip"),
+           "top": BC("noslip")}
+    cls = TURBULENCE_MODELS[model]
+    models = [cls(intensity=0.05, viscosity_ratio=50.0)] if model == "kOmegaSST" else (
+        [cls()] if cls else [])
+    sim = Simulation(grid, bcs, nu=nu, flow_rate=1.0, initial_velocity=(1.0, 0.0),
+                     models=models, **_numerics(num))
+    info = {"re_tau_soll": re_tau, "re_b": re_b, "cf_dean": dean_cf(re_b), "modell": model}
+    return Case("turbulent_channel", "Turbulente Kanalströmung (RANS)", sim, t_end, steady_tol,
+                1.0, 2.0, re_b, info)
+
+
+# ---------------------------------------------------------------------- #
+# Zusatzphysik für beliebige Fälle
+# ---------------------------------------------------------------------- #
+def add_turbulence(case: Case, model: str = "kOmegaSST", **kw) -> Case:
+    """Ergänzt einen Fall um ein Turbulenzmodell (``kOmegaSST`` oder ``Smagorinsky``)."""
+    from .turbulence import TURBULENCE_MODELS
+
+    cls = TURBULENCE_MODELS[model]
+    if cls is None:
+        return case
+    if model == "kOmegaSST":
+        kw.setdefault("U_ref", case.U_ref)
+    case.sim.add_model(cls(**kw))
+    case.info["turbulenz"] = model
+    return case
+
+
+def add_temperature(case: Case, alpha: float, T_inflow: float = 0.0, T_obstacle: float | None = None,
+                    wall_temperatures: dict | None = None, buoyancy: bool = False,
+                    gravity=(0.0, -1.0), limiter: str = "vanleer") -> Case:
+    """Ergänzt Temperaturtransport (optional mit Auftrieb).
+
+    wall_temperatures: {seite: T} für Wände mit fester Temperatur, die übrigen Wände sind adiabat.
+    """
+    from .models import default_scalar_bcs
+
+    bcs = default_scalar_bcs(case.sim, T_inflow)
+    for side, T in (wall_temperatures or {}).items():
+        bcs[side] = ScalarBC("fixed", T)
+    obs = ScalarBC("fixed", T_obstacle) if T_obstacle is not None else ScalarBC("zerogradient")
+    case.sim.add_model(BoussinesqTemperature(alpha, bcs, gravity=gravity, obstacle=obs,
+                                             limiter=limiter, buoyancy=buoyancy,
+                                             initial=T_inflow))
+    return case
+
+
+def add_scalar(case: Case, name: str = "c", diffusivity: float = 1e-3, inflow_value=1.0,
+               inflow_band: tuple | None = None, obstacle_value: float | None = None,
+               limiter: str = "vanleer") -> Case:
+    """Ergänzt einen passiven Skalar.
+
+    inflow_band: (s0, s1) Abschnitt der Einströmränder, in dem der Skalar den Wert
+    ``inflow_value`` hat (sonst 0), z. B. ein Farbstoffstreifen.
+    """
+    from .models import default_scalar_bcs
+
+    bcs = default_scalar_bcs(case.sim, 0.0)
+    for side, bc in bcs.items():
+        if bc.kind == "fixed":
+            if inflow_band is None:
+                bc.value = inflow_value
+            else:
+                a, b = inflow_band
+                bc.value = lambda s, a=a, b=b: np.where((s >= a) & (s <= b), inflow_value, 0.0)
+    obs = ScalarBC("fixed", obstacle_value) if obstacle_value is not None else None
+    case.sim.add_model(PassiveScalar(name, diffusivity, bcs, obs, limiter))
+    return case
+
+
 CASES = {
     "cavity": lid_driven_cavity,
     "cylinder": cylinder_flow,
@@ -249,4 +344,5 @@ CASES = {
     "custom": custom_obstacles,
     "heated_cavity": heated_cavity,
     "rayleigh_benard": rayleigh_benard,
+    "turbulent_channel": turbulent_channel,
 }

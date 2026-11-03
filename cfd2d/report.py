@@ -448,9 +448,57 @@ def report_rayleigh_benard(case, outdir: Path) -> dict:
     return res
 
 
+def report_turbulent_channel(case, outdir: Path) -> dict:
+    plt = _plt()
+    sim = case.sim
+    g = sim.grid
+    u = sim.u[2, 1:-1]
+    tau_w = sim.nu * 0.5 * (u[0] + u[-1]) / (0.5 * g.dy)
+    utau = np.sqrt(max(tau_w, 1e-300))
+    half = g.ny // 2
+    yp = g.yc[:half] * utau / sim.nu
+    up = u[:half] / utau
+    cf = 2 * tau_w / case.U_ref**2
+    res = {"re_tau": float(utau / sim.nu), "re_b": case.info["re_b"], "cf": float(cf),
+           "cf_dean": case.info["cf_dean"], "cf_abweichung_rel": float(cf / case.info["cf_dean"] - 1),
+           "y_plus_erste_zelle": float(yp[0]), "u_plus_mitte": float(up[-1]),
+           "antriebskraft": sim.flow_force}
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.6))
+    axes[0].semilogx(yp, up, "o-", ms=3, label=f"{case.info['modell']}")
+    yy = np.logspace(-1, np.log10(max(yp.max(), 10)), 200)
+    axes[0].semilogx(yy[yy < 12], yy[yy < 12], "k--", lw=1, label="u+ = y+")
+    axes[0].semilogx(yy[yy > 10], np.log(yy[yy > 10]) / 0.41 + 5.2, "k-.", lw=1,
+                     label="Log-Gesetz (κ = 0.41, B = 5.2)")
+    axes[0].set_xlabel("y+")
+    axes[0].set_ylabel("u+")
+    axes[0].set_title("Wandgesetz")
+    axes[0].legend(fontsize=8)
+    axes[0].grid(True, which="both", alpha=0.3)
+    turb = sim.model("turbulence")
+    if turb is not None and hasattr(turb, "k"):
+        k = turb.k.phi[2, 1:-1][:half]
+        axes[1].plot(yp, k / utau**2)
+        axes[1].set_ylabel("k+ = k / u_τ²")
+        axes[1].set_title("Turbulente kinetische Energie")
+    axes[1].set_xlabel("y+")
+    axes[1].grid(True, alpha=0.3)
+    axes[2].plot(sim.nu_t[2, 1:-1] / sim.nu, g.yc)
+    axes[2].set_xlabel("ν_t / ν")
+    axes[2].set_ylabel("y")
+    axes[2].set_title("Turbulente Viskosität")
+    axes[2].grid(True, alpha=0.3)
+    fig.suptitle(f"Turbulenter Kanal: Re_τ = {res['re_tau']:.1f}, Re_b = {res['re_b']:.0f}, "
+                 f"c_f = {cf:.5f} (Dean: {res['cf_dean']:.5f})")
+    fig.tight_layout()
+    fig.savefig(outdir / "wandgesetz.png", dpi=130)
+    plt.close(fig)
+    return res
+
+
 REPORTS = {"cavity": report_cavity, "cylinder": report_cylinder, "channel": report_channel,
            "step": report_step, "custom": report_custom,
-           "heated_cavity": report_heated_cavity, "rayleigh_benard": report_rayleigh_benard}
+           "heated_cavity": report_heated_cavity, "rayleigh_benard": report_rayleigh_benard,
+           "turbulent_channel": report_turbulent_channel}
 
 
 def _jsonable(o):

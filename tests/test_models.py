@@ -97,3 +97,36 @@ def test_heated_obstacle_forced_convection():
     assert np.nanmax(T) <= 1.0 + 1e-9 and np.nanmin(T) >= -1e-9
     # Nachlauf ist wärmer als die Anströmung
     assert np.nanmean(T[45:, :]) > np.nanmean(T[:10, :])
+
+
+def test_turbulent_channel_sst_against_dean():
+    case = cases.turbulent_channel(re_tau=120, y_plus_1=2.0, t_end=250)
+    case.sim.run(case.t_end, steady_tol=1e-5, verbose=False)
+    from cfd2d import report
+
+    res = report.report_turbulent_channel(case, __import__("pathlib").Path(
+        __import__("tempfile").mkdtemp()))
+    assert abs(res["cf_abweichung_rel"]) < 0.15
+    assert res["u_plus_mitte"] > 14  # deutlich turbulentes, vollere Profil als laminar
+    turb = case.sim.model("turbulence")
+    assert turb.k.phi[1:-1, 1:-1].min() >= 0
+    assert case.sim.nu_t[2, 0] == 0.0  # nu_t = 0 an der Wand
+
+
+def test_smagorinsky_runs_and_vanishes_at_walls():
+    case = cases.add_turbulence(cases.lid_driven_cavity(re=1000, n=32), "Smagorinsky")
+    for _ in range(100):
+        case.sim.step()
+    nut = case.sim.nu_t
+    assert nut[1:-1, 1:-1].max() > 0
+    assert case.sim.max_divergence() < 1e-10
+
+
+def test_add_scalar_with_band_and_sst_on_step():
+    case = cases.backward_facing_step(re=2000, length=6, ny=16, t_end=1.0)
+    cases.add_turbulence(case, "kOmegaSST")
+    cases.add_scalar(case, "c", 1e-3, inflow_band=(0.5, 0.75))
+    case.sim.run(case.t_end, verbose=False)
+    c = case.sim.scalars["c"].cell()
+    assert np.nanmax(c) <= 1 + 1e-9 and np.nanmin(c) >= -1e-9
+    assert np.nanmax(c) > 0.5
