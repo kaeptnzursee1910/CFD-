@@ -567,6 +567,15 @@ def create_report(case, outdir, reason: str = "") -> dict:
     plot_model_fields(case, outdir / "felder_modelle.png")
     plot_monitors(case, outdir / "monitore.png")
     specific = REPORTS.get(case.key, lambda c, o: {})(case, outdir)
+    for fo in sim.function_objects:
+        try:
+            fo.write(outdir)
+        except Exception as e:  # pragma: no cover - Auswertung soll nie die Rechnung verlieren
+            print(f"Warnung: Function Object {fo.name} konnte nicht geschrieben werden: {e}")
+    if getattr(case, "spec", None):
+        from .cases import save_case
+
+        save_case(case.spec, outdir / "case.json")
 
     hist = sim.history.as_arrays()
     np.savez_compressed(outdir / "ergebnis.npz", u=sim.u, v=sim.v, p=sim.p,
@@ -588,6 +597,7 @@ def create_report(case, outdir, reason: str = "") -> dict:
         "max_divergenz": sim.max_divergence(),
         "auswertung": specific,
         "modelle": [m.describe() for m in sim.models],
+        "function_objects": [fo.describe() for fo in sim.function_objects],
     }
     if case.key == "custom":
         summary["hindernisse"] = case.info.get("hindernisse")

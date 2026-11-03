@@ -279,6 +279,13 @@ class Model:
         """{schlüssel: (beschriftung, zellfeld)}"""
         return {}
 
+    def state(self) -> dict:
+        """Zusätzlicher Zustand für Speicherstände (Skalarfelder werden separat gesichert)."""
+        return {}
+
+    def set_state(self, sim, state: dict) -> None:
+        pass
+
     def describe(self) -> str:
         return self.title
 

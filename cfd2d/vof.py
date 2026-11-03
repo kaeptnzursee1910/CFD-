@@ -290,6 +290,15 @@ class VOF(Model):
         out["hoehe_links"] = float(g.yc[col.max()] + 0.5 * g.dy) if col.size else 0.0
         return out
 
+    def state(self) -> dict:
+        return {"alpha": self.alpha, "volume0": np.array(self.volume0)}
+
+    def set_state(self, sim, state: dict) -> None:
+        self.alpha[:] = state["alpha"]
+        if "volume0" in state:
+            self.volume0 = float(state["volume0"])
+        self._update_properties()
+
     def fields(self, sim) -> dict:
         solid = sim.grid.solid
         return {"alpha": ("Volumenanteil α (Phase 1)",

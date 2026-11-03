@@ -149,6 +149,7 @@ class Simulation:
         self.flow_rate = flow_rate
         self.flow_force = 0.0  # nachgeregeltes Druckgefälle bei flow_rate
         self.scalars: dict = {}
+        self.function_objects: list = []
         self.models = []
         for m in models or []:
             self.add_model(m)
@@ -398,6 +399,8 @@ class Simulation:
             )
 
         self._record()
+        for fo in self.function_objects:
+            fo.execute(self)
 
     def bulk_velocity(self) -> float:
         """Mittlere Geschwindigkeit u über alle Fluidflächen (periodischer Kanal)."""

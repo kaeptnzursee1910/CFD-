@@ -30,6 +30,7 @@ class Case:
     L_ref: float
     re: float
     info: dict = field(default_factory=dict)
+    spec: dict | None = None
 
     def describe(self) -> str:
         s = [f"=== {self.title} ===", f"Reynolds-Zahl Re = {self.re:g} "
@@ -38,6 +39,12 @@ class Case:
              + (f", stationäres Abbruchkriterium: Residuum < {self.steady_tol:g}"
                 if self.steady_tol else ""),
              self.sim.summary()]
+        if self.sim.models:
+            s.append("Modelle:")
+            s += [f"  - {m.describe()}" for m in self.sim.models]
+        if self.sim.function_objects:
+            s.append("Function Objects:")
+            s += [f"  - {fo.describe()}" for fo in self.sim.function_objects]
         return "\n".join(s)
 
 
@@ -184,6 +191,8 @@ def custom_obstacles(obstacles: list[dict], lx: float = 4.0, ly: float = 1.0, nx
     if bcs is None:
         bcs = {"left": BC("inflow", velocity=U, profile=inflow_profile), "right": BC("outflow"),
                "bottom": BC(walls), "top": BC(walls)}
+    else:
+        bcs = {k: (BC(**b) if isinstance(b, dict) else b) for k, b in bcs.items()}
     sim = Simulation(grid, bcs, nu=U * L_ref / re, compute_forces=bool(obstacles),
                      **_numerics(num))
     info = {"hindernisse": obstacles, "L_ref": L_ref}
@@ -379,3 +388,69 @@ CASES = {
     "turbulent_channel": turbulent_channel,
     "dam_break": dam_break,
 }
+
+
+# ---------------------------------------------------------------------- #
+# Case-Spezifikation (JSON) – entspricht einem OpenFOAM-Case-Verzeichnis
+# ---------------------------------------------------------------------- #
+CASE_TITLES = {
+    "cavity": "Lid-Driven Cavity",
+    "cylinder": "Zylinderumströmung (Schäfer-Turek)",
+    "channel": "Kanalströmung (Poiseuille)",
+    "step": "Rückwärtsgewandte Stufe",
+    "custom": "Eigene Hindernisse",
+    "heated_cavity": "Beheizte Cavity (natürliche Konvektion, de Vahl Davis)",
+    "rayleigh_benard": "Rayleigh-Bénard-Konvektion",
+    "turbulent_channel": "Turbulenter Kanal (RANS k-ω SST)",
+    "dam_break": "Dammbruch (Zweiphasen-VOF)",
+}
+
+
+def build_case(spec: dict) -> Case:
+    """Erzeugt einen Fall aus einer Spezifikation.
+
+    Aufbau::
+
+        {"fall": "cylinder",
+         "parameter": {"re": 100, "nx": 220, "ny": 41, "t_end": 8},
+         "numerik": {"scheme": "ab2", "gamma": "auto", "tau": 0.5, "pressure_solver": "direct"},
+         "turbulenz": {"modell": "kOmegaSST", "intensity": 0.05},      # optional
+         "temperatur": {"alpha": 1e-3, "T_obstacle": 1.0, ...},        # optional
+         "skalar": {"name": "c", "diffusivity": 1e-3, ...},             # optional
+         "function_objects": [{"typ": "sonden", "punkte": [[1, 0.2]]}]}  # optional
+    """
+    key = spec["fall"]
+    if key not in CASES:
+        raise ValueError(f"Unbekannter Fall {key!r}, erlaubt: {list(CASES)}")
+    params = dict(spec.get("parameter", {}))
+    num = dict(spec.get("numerik", {}))
+    case = CASES[key](**params, **num)
+    turb = spec.get("turbulenz")
+    if turb and turb.get("modell", "laminar") != "laminar":
+        kw = {k: v for k, v in turb.items() if k != "modell"}
+        add_turbulence(case, turb["modell"], **kw)
+    if spec.get("temperatur"):
+        add_temperature(case, **spec["temperatur"])
+    if spec.get("skalar"):
+        sk = dict(spec["skalar"])
+        if "inflow_band" in sk and sk["inflow_band"] is not None:
+            sk["inflow_band"] = tuple(sk["inflow_band"])
+        add_scalar(case, **sk)
+    case.spec = spec
+    return case
+
+
+def save_case(spec: dict, path) -> None:
+    import json
+    from pathlib import Path
+
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(spec, f, indent=2, ensure_ascii=False, default=float)
+
+
+def load_case(path) -> dict:
+    import json
+
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
