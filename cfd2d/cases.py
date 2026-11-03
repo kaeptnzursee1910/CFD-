@@ -1,0 +1,196 @@
+"""Vordefinierte Testfälle.
+
+Alle Fälle sind dimensionslos mit Dichte 1. Die Reynolds-Zahl
+``Re = U_ref * L_ref / nu`` legt die Viskosität fest.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from . import geometry
+from .boundary import BoundaryCondition as BC
+from .grid import Grid
+from .solver import Simulation
+
+
+@dataclass
+class Case:
+    """Ein vollständig aufgesetzter Testfall."""
+
+    key: str
+    title: str
+    sim: Simulation
+    t_end: float
+    steady_tol: float | None
+    U_ref: float
+    L_ref: float
+    re: float
+    info: dict = field(default_factory=dict)
+
+    def describe(self) -> str:
+        s = [f"=== {self.title} ===", f"Reynolds-Zahl Re = {self.re:g} "
+             f"(U_ref = {self.U_ref:g}, L_ref = {self.L_ref:g})",
+             f"Endzeit t_end = {self.t_end:g}"
+             + (f", stationäres Abbruchkriterium: Residuum < {self.steady_tol:g}"
+                if self.steady_tol else ""),
+             self.sim.summary()]
+        return "\n".join(s)
+
+
+def _numerics(kw: dict) -> dict:
+    """Filtert die numerischen Einstellungen aus den Keyword-Argumenten."""
+    keys = ("scheme", "gamma", "tau", "dt", "pressure_solver")
+    return {k: kw[k] for k in keys if k in kw and kw[k] is not None}
+
+
+# ---------------------------------------------------------------------- #
+# 1) Lid-Driven Cavity
+# ---------------------------------------------------------------------- #
+def lid_driven_cavity(re: float = 100.0, n: int = 64, t_end: float = 50.0,
+                      steady_tol: float | None = 1e-5, **num) -> Case:
+    """Quadratische Box mit bewegtem Deckel (U = 1, L = 1).
+
+    Validierung gegen Ghia, Ghia & Shin (1982) für Re = 100, 400, 1000.
+    """
+    grid = Grid(n, n, 1.0, 1.0)
+    bcs = {"left": BC("noslip"), "right": BC("noslip"), "bottom": BC("noslip"),
+           "top": BC("noslip", velocity=1.0)}
+    sim = Simulation(grid, bcs, nu=1.0 / re, **_numerics(num))
+    return Case("cavity", "Lid-Driven Cavity", sim, t_end, steady_tol, 1.0, 1.0, re)
+
+
+# ---------------------------------------------------------------------- #
+# 2) Zylinderumströmung (Benchmark nach Schäfer & Turek 1996)
+# ---------------------------------------------------------------------- #
+CYLINDER_REFERENCE = {
+    # Schäfer, Turek et al. (1996), "Benchmark Computations of Laminar Flow Around a Cylinder"
+    20: {"cd": (5.57, 5.59), "cl": (0.0104, 0.0110), "typ": "stationär (Test 2D-1)"},
+    100: {"cd_max": (3.22, 3.24), "cl_max": (0.99, 1.01), "st": (0.295, 0.305),
+          "typ": "periodisch (Test 2D-2)"},
+}
+
+
+def cylinder_flow(re: float = 100.0, nx: int = 440, ny: int = 82, t_end: float = 8.0,
+                  profile: str = "parabolic", length: float = 2.2, **num) -> Case:
+    """Kanal 2.2 x 0.41 mit Zylinder (D = 0.1) bei (0.2, 0.2).
+
+    Die mittlere Einströmgeschwindigkeit ist U = 1, also ``Re = U * D / nu``.
+    Mit parabolischem Profil und Re = 20 bzw. 100 entspricht das den
+    Benchmarks 2D-1 und 2D-2 von Schäfer & Turek.
+    """
+    H, D, xc, yc = 0.41, 0.1, 0.2, 0.2
+    grid = Grid(nx, ny, length, H)
+    grid.add_obstacle(geometry.circle(grid, xc, yc, D / 2))
+    bcs = {"left": BC("inflow", velocity=1.0, profile=profile), "right": BC("outflow"),
+           "bottom": BC("noslip"), "top": BC("noslip")}
+    sim = Simulation(grid, bcs, nu=1.0 * D / re, compute_forces=True,
+                     initial_velocity=(0.0, 0.0), **_numerics(num))
+    info = {"D": D, "xc": xc, "yc": yc, "H": H}
+    ref = CYLINDER_REFERENCE.get(int(round(re))) if profile == "parabolic" and length == 2.2 else None
+    if ref:
+        info["referenz"] = ref
+    return Case("cylinder", "Zylinderumströmung (Schäfer-Turek-Kanal)", sim, t_end, None,
+                1.0, D, re, info)
+
+
+# ---------------------------------------------------------------------- #
+# 3) Kanalströmung (Poiseuille)
+# ---------------------------------------------------------------------- #
+def channel_flow(re: float = 20.0, length: float = 6.0, ny: int = 32, nx: int | None = None,
+                 profile: str = "uniform", t_end: float = 40.0,
+                 steady_tol: float | None = 1e-5, **num) -> Case:
+    """Ebener Kanal der Höhe H = 1 mit mittlerer Geschwindigkeit U = 1.
+
+    Mit Blockprofil am Einlass entwickelt sich die Strömung über die
+    Einlauflänge L_e ≈ 0.05 Re H zum parabolischen Poiseuille-Profil
+    ``u(y) = 6 U y (H - y) / H^2``. Das Druckgefälle dort ist
+    ``dp/dx = -12 nu U / H^2``.
+    """
+    if nx is None:
+        nx = int(round(length * ny))
+    grid = Grid(nx, ny, length, 1.0)
+    bcs = {"left": BC("inflow", velocity=1.0, profile=profile), "right": BC("outflow"),
+           "bottom": BC("noslip"), "top": BC("noslip")}
+    sim = Simulation(grid, bcs, nu=1.0 / re, initial_velocity=(1.0, 0.0), **_numerics(num))
+    info = {"H": 1.0, "einlauflaenge": 0.05 * re}
+    return Case("channel", "Kanalströmung (Poiseuille)", sim, t_end, steady_tol, 1.0, 1.0, re, info)
+
+
+# ---------------------------------------------------------------------- #
+# 4) Rückwärtsgewandte Stufe
+# ---------------------------------------------------------------------- #
+def backward_facing_step(re: float = 400.0, length: float = 15.0, ny: int = 40,
+                         nx: int | None = None, inlet_length: float = 1.0,
+                         t_end: float = 100.0, steady_tol: float | None = 1e-5,
+                         **num) -> Case:
+    """Kanal der Höhe H = 1 mit Stufenhöhe h = H/2 (Erweiterungsverhältnis 2).
+
+    Einströmung parabolisch über der Stufe mit mittlerer Geschwindigkeit
+    U = 1. Die Reynolds-Zahl ``Re = U * H / nu`` ist mit dem hydraulischen
+    Durchmesser des Einlasses (2 * H/2 = H) gebildet, wie bei Gartling (1990).
+    Ausgewertet wird die Wiederanlegelänge der Ablöseblase hinter der Stufe.
+    """
+    H, h = 1.0, 0.5
+    if nx is None:
+        nx = int(round(length / H * ny))
+    grid = Grid(nx, ny, length, H)
+    if inlet_length > 0:
+        grid.add_obstacle(geometry.rectangle(grid, 0.0, 0.0, inlet_length, h))
+    bcs = {"left": BC("inflow", velocity=1.0, profile="parabolic"), "right": BC("outflow"),
+           "bottom": BC("noslip"), "top": BC("noslip")}
+    sim = Simulation(grid, bcs, nu=1.0 * H / re, **_numerics(num))
+    info = {"H": H, "h": h, "x_stufe": inlet_length}
+    return Case("step", "Rückwärtsgewandte Stufe (Backward-Facing Step)", sim, t_end, steady_tol,
+                1.0, H, re, info)
+
+
+# ---------------------------------------------------------------------- #
+# 5) Eigene Hindernisse
+# ---------------------------------------------------------------------- #
+def custom_obstacles(obstacles: list[dict], lx: float = 4.0, ly: float = 1.0, nx: int = 320,
+                     ny: int = 80, re: float = 100.0, U: float = 1.0, L_ref: float | None = None,
+                     inflow_profile: str = "uniform", walls: str = "slip", t_end: float = 10.0,
+                     bcs: dict | None = None, steady_tol: float | None = None,
+                     **num) -> Case:
+    """Freie Geometrie: Kanal mit beliebigen Hindernissen.
+
+    Parameters
+    ----------
+    obstacles : list of dict
+        Beschreibungen für :func:`cfd2d.geometry.build_obstacle`.
+    walls : {"slip", "noslip"}
+        Art der Wände oben und unten (wird ignoriert, wenn ``bcs`` gesetzt ist).
+    bcs : dict, optional
+        Eigene Randbedingungen für alle vier Seiten.
+    L_ref : float, optional
+        Charakteristische Länge für Re und die Kraftbeiwerte. Standard ist die
+        größte Ausdehnung der Hindernisse quer zur Strömung (oder ly, wenn es
+        keine Hindernisse gibt).
+    """
+    grid = Grid(nx, ny, lx, ly)
+    for spec in obstacles:
+        grid.add_obstacle(geometry.build_obstacle(grid, spec))
+    if L_ref is None:
+        solid = grid.solid
+        if solid.any():
+            rows = solid.any(axis=0)
+            L_ref = rows.sum() * grid.dy
+        else:
+            L_ref = ly
+    if bcs is None:
+        bcs = {"left": BC("inflow", velocity=U, profile=inflow_profile), "right": BC("outflow"),
+               "bottom": BC(walls), "top": BC(walls)}
+    sim = Simulation(grid, bcs, nu=U * L_ref / re, compute_forces=bool(obstacles),
+                     **_numerics(num))
+    info = {"hindernisse": obstacles, "L_ref": L_ref}
+    return Case("custom", "Eigene Hindernisse", sim, t_end, steady_tol, U, L_ref, re, info)
+
+
+CASES = {
+    "cavity": lid_driven_cavity,
+    "cylinder": cylinder_flow,
+    "channel": channel_flow,
+    "step": backward_facing_step,
+    "custom": custom_obstacles,
+}
