@@ -15,4 +15,12 @@ Unterbrechung (z. B. Nutzungslimit) mit „weiter“ an der ersten offenen Etapp
 | 4 | Turbulenzmodelle: Smagorinsky (LES), k-ω SST (RANS), Wandabstand; Testfall: turbulenter Kanal | `momentumTransport` | erledigt (Re_τ = 180: c_f 6,5 % unter Dean) |
 | 5 | Zweiphasenströmung (VOF, Dichtesprung): Dammbruch | `interFoam` | erledigt |
 | 6 | Function Objects: Sonden, Linienproben, VTK-Export für ParaView, Speicherstände und Neustart, Case speichern und laden (JSON) | `probes`, `sample`, `foamToVTK`, Zeitverzeichnisse | erledigt |
-| 7 | Integration ins interaktive Menü, Tests, Dokumentation | – | offen |
+| 7 | Integration ins interaktive Menü, Tests, Dokumentation | – | erledigt |
+
+## Mögliche nächste Schritte (nicht begonnen)
+
+- Implizite Diffusion (ADI) bzw. SIMPLE-Löser für schnellere stationäre RANS-Rechnungen
+- Nicht-äquidistante (gestreckte) Gitter für Wandauflösung
+- MULES-artige Flusskorrektur für VOF
+- Spalart-Allmaras- und k-ε-Modell
+- Kompressibler Löser (Riemann-Löser, rhoCentralFoam-ähnlich)

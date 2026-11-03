@@ -156,7 +156,7 @@ class LivePlotter:
         g = self.sim.grid
         aspect = g.lx / g.ly
         self.has_forces = self.sim.compute_forces
-        fig_w = 11.0
+        fig_w = 11.0 if aspect > 1.5 else 8.0
         field_h = min(max(fig_w / aspect * 0.8, 2.6), 6.5)
         fig_h = field_h + 3.0
 

@@ -185,19 +185,24 @@ def test_interactive_cavity_run(monkeypatch, tmp_path):
         "16",         # Zellen
         "2",          # t_end
         "",           # Toleranz (Standard)
+        "",           # Turbulenzmodell: laminar
+        "n",          # Temperatur
+        "n",          # Skalar
         "n",          # Numerik anpassen? nein
+        "n",          # Function Objects
+        str(out),     # Ausgabeordner
         "j",          # GIF speichern
         "2",          # Feld: Wirbelstärke
         "n",          # Stromlinien
         "20",         # Update alle 20 Schritte
-        str(out),     # Ausgabeordner
+        "n",          # Case-Datei extra speichern
         "",           # starten
         "n",          # keine weitere Simulation
     ]
     _feed(monkeypatch, answers)
     interactive.main(output_root=tmp_path)
     for f in ("felder.png", "konvergenz.png", "validierung_mittellinien.png", "ergebnis.npz",
-              "zusammenfassung.json", "animation.gif"):
+              "zusammenfassung.json", "animation.gif", "case.json", "checkpoint.npz"):
         assert (out / f).exists(), f
     summary = json.loads((out / "zusammenfassung.json").read_text(encoding="utf-8"))
     assert summary["reynolds"] == 100
@@ -218,15 +223,47 @@ def test_interactive_custom_with_obstacles(monkeypatch, tmp_path):
         "7",                      # fertig
         "", "50", "0.5",          # L_ref automatisch, Re, t_end
         "n",                      # kein vorzeitiger Abbruch
-        "n",                      # Numerik
+        "", "n", "n",             # laminar, keine Temperatur, kein Skalar
+        "n", "n",                 # Numerik, Function Objects
+        str(out),
         "n",                      # GIF
-        str(out), "", "n",
+        "n", "", "n",
     ]
     _feed(monkeypatch, answers)
     interactive.main(output_root=tmp_path)
     assert (out / "kraftbeiwerte.png").exists()
     summary = json.loads((out / "zusammenfassung.json").read_text(encoding="utf-8"))
     assert len(summary["hindernisse"]) == 2
+
+
+def test_interactive_physics_functions_and_restart(monkeypatch, tmp_path):
+    from cfd2d import interactive
+
+    monkeypatch.setattr("cfd2d.visualization.display_available", lambda: False)
+    out = tmp_path / "zyl"
+    answers = [
+        "2", "100", "4", "40", "", "", "0.2",   # Zylinder, eigenes Gitter 40 x (auto) -> nx
+        "2", "", "",                            # k-omega SST, I, ratio
+        "j", "", "", "j", "1",                  # Temperatur: Pr, T_in, beheizt, T=1
+        "n", "n", "n", "n", "n",                # keine Wandtemperaturen (4 Seiten), kein Auftrieb
+        "",                                     # Limiter (van Leer)
+        "j", "", "j", "0.15", "0.25", "",       # Skalar mit Streifen
+        "n",                                    # Numerik
+        "j", "1", "0.5 0.2", "", "",            # Sonde
+        "5", "0.1",                             # Checkpoint
+        "6",                                    # fertig
+        str(out), "n", "n", "", "j",            # Ausgabe, GIF nein, JSON nein, start, weitere
+        "11", str(out), "0.3", "n", "n",        # Fortsetzen bis t = 0.3
+    ]
+    _feed(monkeypatch, answers)
+    interactive.main(output_root=tmp_path)
+    for f in ("case.json", "checkpoint.npz", "sonden.csv", "felder_modelle.png"):
+        assert (out / f).exists(), f
+    spec = json.loads((out / "case.json").read_text(encoding="utf-8"))
+    assert spec["turbulenz"]["modell"] == "kOmegaSST"
+    assert spec["temperatur"]["T_obstacle"] == 1.0
+    summary = json.loads((out / "zusammenfassung.json").read_text(encoding="utf-8"))
+    assert summary["endzeit"] == pytest.approx(0.3)
 
 
 def test_input_validation_retries(monkeypatch):

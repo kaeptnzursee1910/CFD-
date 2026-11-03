@@ -162,7 +162,7 @@ def custom_obstacles(obstacles: list[dict], lx: float = 4.0, ly: float = 1.0, nx
                      ny: int = 80, re: float = 100.0, U: float = 1.0, L_ref: float | None = None,
                      inflow_profile: str = "uniform", walls: str = "slip", t_end: float = 10.0,
                      bcs: dict | None = None, steady_tol: float | None = None,
-                     **num) -> Case:
+                     flow_rate: float | None = None, **num) -> Case:
     """Freie Geometrie: Kanal mit beliebigen Hindernissen.
 
     Parameters
@@ -194,6 +194,8 @@ def custom_obstacles(obstacles: list[dict], lx: float = 4.0, ly: float = 1.0, nx
     else:
         bcs = {k: (BC(**b) if isinstance(b, dict) else b) for k, b in bcs.items()}
     sim = Simulation(grid, bcs, nu=U * L_ref / re, compute_forces=bool(obstacles),
+                     flow_rate=flow_rate,
+                     initial_velocity=(U, 0.0) if flow_rate is not None else (0.0, 0.0),
                      **_numerics(num))
     info = {"hindernisse": obstacles, "L_ref": L_ref}
     return Case("custom", "Eigene Hindernisse", sim, t_end, steady_tol, U, L_ref, re, info)
