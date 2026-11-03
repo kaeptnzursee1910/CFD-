@@ -64,7 +64,36 @@ def field_data(sim, field: str) -> np.ndarray:
         psi = sim.streamfunction()
         pc = 0.25 * (psi[:-1, :-1] + psi[1:, :-1] + psi[:-1, 1:] + psi[1:, 1:])
         return np.where(sim.grid.solid, np.nan, pc)
-    raise ValueError(f"Unbekanntes Feld {field!r}, erlaubt: {list(FIELDS)}")
+    for m in getattr(sim, "models", []):
+        f = m.fields(sim)
+        if field in f:
+            return f[field][1]
+    if field == "nu_t" and getattr(sim, "variable_viscosity", False):
+        return np.where(sim.grid.solid, np.nan, sim.nu_t[1:-1, 1:-1])
+    raise ValueError(f"Unbekanntes Feld {field!r}, erlaubt: {list(available_fields(sim))}")
+
+
+MODEL_CMAPS = {"T": "inferno", "k": "magma", "omega": "magma", "nu_t": "cividis",
+               "alpha": "Blues"}
+
+
+def available_fields(sim) -> dict:
+    """Alle anzeigbaren Felder: Grundfelder plus die Felder der Zusatzmodelle."""
+    out = dict(FIELDS)
+    for m in getattr(sim, "models", []):
+        for k, (label, _) in m.fields(sim).items():
+            out[k] = label
+    if getattr(sim, "variable_viscosity", False) and "nu_t" not in out:
+        out["nu_t"] = "Turbulente Viskosität ν_t"
+    return out
+
+
+def field_label(sim, field: str) -> str:
+    return available_fields(sim).get(field, field)
+
+
+def field_cmap(field: str) -> str:
+    return CMAPS.get(field) or MODEL_CMAPS.get(field, "viridis")
 
 
 def color_limits(data: np.ndarray, field: str) -> tuple[float, float]:
@@ -144,12 +173,12 @@ class LivePlotter:
         self.ax_force = self.fig.add_subplot(gs[1, 1]) if self.has_forces else None
 
         data = field_data(self.sim, field)
-        cmap = plt.get_cmap(CMAPS[field]).with_extremes(bad="0.35")
+        cmap = plt.get_cmap(field_cmap(field)).with_extremes(bad="0.35")
         self.im = self.ax_field.imshow(np.ma.masked_invalid(data.T), origin="lower",
                                        extent=(0, g.lx, 0, g.ly), cmap=cmap,
                                        interpolation="bilinear", aspect="equal")
         self.cbar = self.fig.colorbar(self.im, ax=self.ax_field, fraction=0.035, pad=0.02)
-        self.cbar.set_label(FIELDS[field])
+        self.cbar.set_label(field_label(self.sim, field))
         self.ax_field.set_xlabel("x")
         self.ax_field.set_ylabel("y")
 

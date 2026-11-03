@@ -8,8 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from . import geometry
 from .boundary import BoundaryCondition as BC
+from .models import BoussinesqTemperature, PassiveScalar, ScalarBC
 from .grid import Grid
 from .solver import Simulation
 
@@ -187,10 +190,63 @@ def custom_obstacles(obstacles: list[dict], lx: float = 4.0, ly: float = 1.0, nx
     return Case("custom", "Eigene Hindernisse", sim, t_end, steady_tol, U, L_ref, re, info)
 
 
+# ---------------------------------------------------------------------- #
+# 6) Natürliche Konvektion: seitlich beheizte Cavity (de Vahl Davis)
+# ---------------------------------------------------------------------- #
+def heated_cavity(ra: float = 1e4, pr: float = 0.71, n: int = 48, t_end: float = 500.0,
+                  steady_tol: float | None = 1e-6, limiter: str = "vanleer", **num) -> Case:
+    """Quadratische Box: links warm (T = +0.5), rechts kalt (T = -0.5), oben und unten adiabat.
+
+    Freifall-Skalierung: U = sqrt(g beta dT L), nu = sqrt(Pr/Ra), alpha = 1/sqrt(Ra Pr).
+    Referenz: de Vahl Davis (1983) für Ra = 1e3 bis 1e6.
+    """
+    grid = Grid(n, n, 1.0, 1.0)
+    bcs = {s: BC("noslip") for s in ("left", "right", "bottom", "top")}
+    thermal = BoussinesqTemperature(
+        alpha=1.0 / np.sqrt(ra * pr), limiter=limiter,
+        bcs={"left": ScalarBC("fixed", 0.5), "right": ScalarBC("fixed", -0.5),
+             "bottom": ScalarBC("zerogradient"), "top": ScalarBC("zerogradient")})
+    sim = Simulation(grid, bcs, nu=np.sqrt(pr / ra), models=[thermal], **_numerics(num))
+    info = {"ra": ra, "pr": pr, "geschw_skala_alpha": np.sqrt(ra * pr)}
+    return Case("heated_cavity", "Beheizte Cavity (natürliche Konvektion)", sim, t_end,
+                steady_tol, 1.0, 1.0, float(np.sqrt(ra / pr)), info)
+
+
+# ---------------------------------------------------------------------- #
+# 7) Rayleigh-Bénard-Konvektion
+# ---------------------------------------------------------------------- #
+def rayleigh_benard(ra: float = 1e4, pr: float = 0.71, aspect: float = 4.032, ny: int = 24,
+                    nx: int | None = None, t_end: float = 300.0, steady_tol: float | None = 1e-6,
+                    seed: int = 1, limiter: str = "vanleer", **num) -> Case:
+    """Fluidschicht der Höhe 1, unten warm (+0.5), oben kalt (-0.5), periodisch in x.
+
+    Unterhalb von Ra_krit ≈ 1708 bleibt die Schicht in Ruhe (Nu = 1); darüber
+    bilden sich Konvektionsrollen. Das Standard-Seitenverhältnis 4.032 entspricht
+    zwei kritischen Wellenlängen.
+    """
+    if nx is None:
+        nx = int(round(aspect * ny))
+    grid = Grid(nx, ny, aspect, 1.0)
+    bcs = {"left": BC("periodic"), "right": BC("periodic"), "bottom": BC("noslip"),
+           "top": BC("noslip")}
+    rng = np.random.default_rng(seed)
+    X, Y = grid.cell_centers()
+    T0 = 0.5 - Y + 0.01 * rng.standard_normal(X.shape) * np.sin(np.pi * Y)
+    thermal = BoussinesqTemperature(
+        alpha=1.0 / np.sqrt(ra * pr), initial=T0, limiter=limiter,
+        bcs={"bottom": ScalarBC("fixed", 0.5), "top": ScalarBC("fixed", -0.5)})
+    sim = Simulation(grid, bcs, nu=np.sqrt(pr / ra), models=[thermal], **_numerics(num))
+    info = {"ra": ra, "pr": pr, "ra_krit": 1707.76}
+    return Case("rayleigh_benard", "Rayleigh-Bénard-Konvektion", sim, t_end, steady_tol, 1.0, 1.0,
+                float(np.sqrt(ra / pr)), info)
+
+
 CASES = {
     "cavity": lid_driven_cavity,
     "cylinder": cylinder_flow,
     "channel": channel_flow,
     "step": backward_facing_step,
     "custom": custom_obstacles,
+    "heated_cavity": heated_cavity,
+    "rayleigh_benard": rayleigh_benard,
 }

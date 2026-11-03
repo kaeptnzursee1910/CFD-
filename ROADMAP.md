@@ -10,8 +10,8 @@ Unterbrechung (z. B. Nutzungslimit) mit „weiter“ an der ersten offenen Etapp
 | Etappe | Inhalt | OpenFOAM-Vorbild | Status |
 |---|---|---|---|
 | 1 | Variable (effektive) Viskosität, periodische Ränder in x, Volumenkraft, Steuerung des Volumenstroms | `cyclic`, `meanVelocityForce` | erledigt |
-| 2 | Allgemeiner Skalartransport (TVD-Schemata: Upwind, van Leer, Minmod, Superbee; Randbedingungen fest, Gradient null, Fluss) | `scalarTransportFoam`, `fvSchemes` | offen |
-| 3 | Temperatur mit Boussinesq-Auftrieb; Testfälle: beheizte Cavity (de Vahl Davis), Rayleigh-Bénard | `buoyantBoussinesqPimpleFoam` | offen |
+| 2 | Allgemeiner Skalartransport (TVD-Schemata: Upwind, van Leer, Minmod, Superbee; Randbedingungen fest, Gradient null, Fluss) | `scalarTransportFoam`, `fvSchemes` | erledigt |
+| 3 | Temperatur mit Boussinesq-Auftrieb; Testfälle: beheizte Cavity (de Vahl Davis), Rayleigh-Bénard | `buoyantBoussinesqPimpleFoam` | erledigt (Nu bei Ra = 1e4: 2,255 statt 2,243) |
 | 4 | Turbulenzmodelle: Smagorinsky (LES), k-ω SST (RANS), Wandabstand; Testfall: turbulenter Kanal | `momentumTransport` | offen |
 | 5 | Zweiphasenströmung (VOF, Dichtesprung): Dammbruch | `interFoam` | offen |
 | 6 | Function Objects: Sonden, Linienproben, VTK-Export für ParaView, Speicherstände und Neustart, Case speichern und laden (JSON) | `probes`, `sample`, `foamToVTK`, Zeitverzeichnisse | offen |

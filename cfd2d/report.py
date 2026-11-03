@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from . import validation
-from .visualization import CMAPS, FIELDS, field_data
+from .visualization import field_cmap, field_data, field_label
 
 
 def _plt():
@@ -21,7 +21,7 @@ def _field_axes(ax, sim, field, title=None, streamlines=False, contour=False):
     plt = _plt()
     g = sim.grid
     data = field_data(sim, field)
-    cmap = plt.get_cmap(CMAPS[field]).with_extremes(bad="0.35")
+    cmap = plt.get_cmap(field_cmap(field)).with_extremes(bad="0.35")
     finite = data[np.isfinite(data)]
     vmin = vmax = None
     if finite.size and field in ("vorticity", "v"):
@@ -29,7 +29,7 @@ def _field_axes(ax, sim, field, title=None, streamlines=False, contour=False):
         vmin, vmax = -a, a
     im = ax.imshow(np.ma.masked_invalid(data.T), origin="lower", extent=(0, g.lx, 0, g.ly),
                    cmap=cmap, interpolation="bilinear", aspect="equal", vmin=vmin, vmax=vmax)
-    plt.colorbar(im, ax=ax, fraction=0.035, pad=0.02).set_label(FIELDS[field], fontsize=8)
+    plt.colorbar(im, ax=ax, fraction=0.035, pad=0.02).set_label(field_label(sim, field), fontsize=8)
     if streamlines:
         uc, vc = sim.cell_velocity()
         uc, vc = np.nan_to_num(uc), np.nan_to_num(vc)
@@ -44,7 +44,7 @@ def _field_axes(ax, sim, field, title=None, streamlines=False, contour=False):
         inside = s[:-1, :-1] & s[1:, :-1] & s[:-1, 1:] & s[1:, 1:]
         ax.contour(g.xn, g.yn, np.ma.masked_array(psi, inside).T, levels=30, colors="k",
                    linewidths=0.5)
-    ax.set_title(title or FIELDS[field], fontsize=10)
+    ax.set_title(title or field_label(sim, field), fontsize=10)
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_xlim(0, g.lx)
@@ -70,6 +70,42 @@ def plot_fields(case, path):
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     plt.close(fig)
+
+
+def plot_model_fields(case, path) -> bool:
+    """Felder der Zusatzmodelle (Temperatur, Skalare, Turbulenzgrößen) mit Isolinien."""
+    from .visualization import FIELDS, available_fields
+
+    plt = _plt()
+    sim = case.sim
+    g = sim.grid
+    keys = [k for k in available_fields(sim) if k not in FIELDS]
+    if not keys:
+        return False
+    wide = g.lx / g.ly > 1.6
+    n = len(keys)
+    if wide:
+        fig, axes = plt.subplots(n, 1, figsize=(11, min(n * 11 / (g.lx / g.ly) * 0.9 + 1.5, 18)),
+                                 squeeze=False)
+    else:
+        cols = min(n, 2)
+        rows = int(np.ceil(n / cols))
+        fig, axes = plt.subplots(rows, cols, figsize=(6.2 * cols, 5 * rows), squeeze=False)
+    axes = np.ravel(axes)
+    for ax, k in zip(axes, keys):
+        _field_axes(ax, sim, k)
+        data = field_data(sim, k)
+        if k in ("T",) or k in sim.scalars:
+            if np.isfinite(data).any() and np.nanmax(data) - np.nanmin(data) > 1e-12:
+                ax.contour(g.xc, g.yc, np.ma.masked_invalid(data).T, levels=12, colors="w",
+                           linewidths=0.5, alpha=0.8)
+    for ax in axes[len(keys):]:
+        ax.set_visible(False)
+    fig.suptitle(f"{case.title}: Modellfelder, t = {sim.t:.3f}", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    return True
 
 
 def plot_convergence(case, path):
@@ -302,8 +338,119 @@ def report_custom(case, outdir: Path) -> dict:
     return {}
 
 
+def plot_monitors(case, path) -> bool:
+    """Zeitverläufe der Modell-Monitore (Nusselt-Zahlen, Skalarintegrale, ...)."""
+    plt = _plt()
+    h = case.sim.history
+    if not h.extra:
+        return False
+    t = np.asarray(h.t)
+    keys = list(h.extra)
+    fig, axes = plt.subplots(1, len(keys), figsize=(4.6 * len(keys), 3.6), squeeze=False)
+    for ax, k in zip(axes[0], keys):
+        y = np.asarray(h.extra[k])
+        ax.plot(t[-len(y):], y)
+        ax.set_title(k.replace("_", " "))
+        ax.set_xlabel("Zeit t")
+        ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    return True
+
+
+def report_heated_cavity(case, outdir: Path) -> dict:
+    plt = _plt()
+    sim = case.sim
+    th = sim.model("thermal")
+    sc = case.info["geschw_skala_alpha"]
+    y = np.linspace(0, 1, 201)
+    u = sim.sample_u(np.full_like(y, 0.5), y) * sc
+    v = sim.sample_v(y, np.full_like(y, 0.5)) * sc
+    res = {
+        "Nu_heiss": th.nusselt("left"), "Nu_kalt": th.nusselt("right"),
+        "u_max": float(u.max()), "y_umax": float(y[u.argmax()]),
+        "v_max": float(v.max()), "x_vmax": float(y[v.argmax()]),
+        "hinweis": "Geschwindigkeiten in Einheiten alpha/L (wie de Vahl Davis)",
+    }
+    ref = validation.de_vahl_davis_reference(case.info["ra"])
+    if ref:
+        res["referenz_de_vahl_davis"] = ref
+        res["Nu_rel_fehler"] = abs(res["Nu_heiss"] - ref["nu"]) / ref["nu"]
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.8))
+    g = sim.grid
+    T = th.field.cell()
+    im = axes[0].contourf(g.xc, g.yc, T.T, levels=21, cmap="inferno")
+    axes[0].contour(g.xc, g.yc, T.T, levels=11, colors="w", linewidths=0.6)
+    plt.colorbar(im, ax=axes[0]).set_label("T")
+    axes[0].set_aspect("equal")
+    axes[0].set_title("Isothermen")
+    axes[1].plot(u, y, label="u(0.5, y)")
+    axes[1].plot(v, y, label="v(x, 0.5) über x")
+    if ref:
+        axes[1].plot(ref["u_max"], ref["y_umax"], "o", color="C0", mfc="none",
+                     label="Referenz u_max")
+        axes[1].plot(ref["v_max"], ref["x_vmax"], "s", color="C1", mfc="none",
+                     label="Referenz v_max")
+    axes[1].set_xlabel("Geschwindigkeit [alpha/L]")
+    axes[1].set_ylabel("y bzw. x")
+    axes[1].set_title("Mittellinienprofile")
+    axes[1].legend(fontsize=8)
+    axes[1].grid(True, alpha=0.3)
+    axes[2].plot(th.local_nusselt("left"), g.yc, label="heiße Wand")
+    axes[2].plot(th.local_nusselt("right"), g.yc, label="kalte Wand")
+    axes[2].set_xlabel("lokale Nusselt-Zahl")
+    axes[2].set_ylabel("y")
+    axes[2].set_title(f"Nu = {res['Nu_heiss']:.4f}" + (f" (Referenz {ref['nu']})" if ref else ""))
+    axes[2].legend(fontsize=8)
+    axes[2].grid(True, alpha=0.3)
+    fig.suptitle(f"Beheizte Cavity, Ra = {case.info['ra']:g}, Pr = {case.info['pr']:g}, "
+                 f"Gitter {g.nx}x{g.ny}")
+    fig.tight_layout()
+    fig.savefig(outdir / "waermeuebergang.png", dpi=130)
+    plt.close(fig)
+    return res
+
+
+def report_rayleigh_benard(case, outdir: Path) -> dict:
+    plt = _plt()
+    sim = case.sim
+    th = sim.model("thermal")
+    g = sim.grid
+    res = {"Nu_unten": th.nusselt("bottom"), "Nu_oben": th.nusselt("top"),
+           "ra": case.info["ra"], "ra_krit": case.info["ra_krit"],
+           "konvektion": bool(th.nusselt("bottom") > 1.05)}
+    h = sim.history.extra
+    fig, axes = plt.subplots(2, 1, figsize=(12, 7))
+    T = th.field.cell()
+    im = axes[0].imshow(T.T, origin="lower", extent=(0, g.lx, 0, g.ly), cmap="inferno",
+                        aspect="equal")
+    uc, vc = sim.cell_velocity()
+    axes[0].streamplot(g.xc, g.yc, np.nan_to_num(uc).T, np.nan_to_num(vc).T, color="w",
+                       linewidth=0.5, density=1.2, arrowsize=0.6)
+    plt.colorbar(im, ax=axes[0], fraction=0.02).set_label("T")
+    axes[0].set_title("Temperatur und Stromlinien (Konvektionsrollen)")
+    if "Nu_bottom" in h:
+        t = np.asarray(sim.history.t)
+        axes[1].plot(t, h["Nu_bottom"], label="Nu unten")
+        axes[1].plot(t, h["Nu_top"], label="Nu oben")
+        axes[1].axhline(1.0, color="k", ls="--", lw=0.8, label="reine Wärmeleitung")
+        axes[1].set_xlabel("Zeit t")
+        axes[1].set_ylabel("Nu")
+        axes[1].legend()
+        axes[1].grid(True, alpha=0.3)
+    fig.suptitle(f"Rayleigh-Bénard, Ra = {case.info['ra']:g} (Ra_krit = 1708), "
+                 f"Nu = {res['Nu_unten']:.4f}")
+    fig.tight_layout()
+    fig.savefig(outdir / "rayleigh_benard.png", dpi=130)
+    plt.close(fig)
+    return res
+
+
 REPORTS = {"cavity": report_cavity, "cylinder": report_cylinder, "channel": report_channel,
-           "step": report_step, "custom": report_custom}
+           "step": report_step, "custom": report_custom,
+           "heated_cavity": report_heated_cavity, "rayleigh_benard": report_rayleigh_benard}
 
 
 def _jsonable(o):
@@ -333,7 +480,9 @@ def create_report(case, outdir, reason: str = "") -> dict:
     sim = case.sim
     plot_fields(case, outdir / "felder.png")
     plot_convergence(case, outdir / "konvergenz.png")
-    specific = REPORTS[case.key](case, outdir)
+    plot_model_fields(case, outdir / "felder_modelle.png")
+    plot_monitors(case, outdir / "monitore.png")
+    specific = REPORTS.get(case.key, lambda c, o: {})(case, outdir)
 
     hist = sim.history.as_arrays()
     np.savez_compressed(outdir / "ergebnis.npz", u=sim.u, v=sim.v, p=sim.p,
@@ -354,6 +503,7 @@ def create_report(case, outdir, reason: str = "") -> dict:
         "residuum_ende": sim.residual,
         "max_divergenz": sim.max_divergence(),
         "auswertung": specific,
+        "modelle": [m.describe() for m in sim.models],
     }
     if case.key == "custom":
         summary["hindernisse"] = case.info.get("hindernisse")

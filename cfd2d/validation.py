@@ -172,3 +172,28 @@ def separation_bubbles(sim, wall: str = "top", x_min: float = 0.0) -> list[tuple
     if inside:
         out.append((float(xs), float(x[g.nx - 1])))
     return out
+
+
+# ---------------------------------------------------------------------- #
+# Natürliche Konvektion in der seitlich beheizten Cavity
+# G. de Vahl Davis (1983), Int. J. Numer. Meth. Fluids 3, 249-264 (Pr = 0.71)
+# Geschwindigkeiten in Einheiten alpha/L, u_max auf x = 0.5, v_max auf y = 0.5
+# ---------------------------------------------------------------------- #
+DE_VAHL_DAVIS = {
+    1e3: {"nu": 1.118, "u_max": 3.649, "y_umax": 0.813, "v_max": 3.697, "x_vmax": 0.178},
+    1e4: {"nu": 2.243, "u_max": 16.178, "y_umax": 0.823, "v_max": 19.617, "x_vmax": 0.119},
+    1e5: {"nu": 4.519, "u_max": 34.73, "y_umax": 0.855, "v_max": 68.59, "x_vmax": 0.066},
+    1e6: {"nu": 8.800, "u_max": 64.63, "y_umax": 0.850, "v_max": 219.36, "x_vmax": 0.0379},
+}
+
+
+def de_vahl_davis_reference(ra: float) -> dict | None:
+    for r, d in DE_VAHL_DAVIS.items():
+        if abs(ra - r) / r < 0.05:
+            return {"ra": r, **d}
+    return None
+
+
+# Rayleigh-Bénard: kritische Rayleigh-Zahl für zwei haftende Wände
+RAYLEIGH_BENARD_RA_CRIT = 1707.76
+RAYLEIGH_BENARD_K_CRIT = 3.117  # kritische Wellenzahl, Wellenlänge 2*pi/k = 2.016 H
