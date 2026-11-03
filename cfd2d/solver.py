@@ -142,6 +142,9 @@ class Simulation:
         self.nu_t = np.zeros((nx + 2, ny + 2))
         self.nu_eff = np.full((nx + 2, ny + 2), self.nu)
         self.variable_viscosity = False
+        # Variable Dichte (VOF): rho-Zellfeld; nu_eff enthält dann die dynamische Viskosität mu
+        self.variable_density = False
+        self.rho = np.ones((nx + 2, ny + 2))
         self.body_force = (float(body_force[0]), float(body_force[1]))
         self.flow_rate = flow_rate
         self.flow_force = 0.0  # nachgeregeltes Druckgefälle bei flow_rate
@@ -208,7 +211,10 @@ class Simulation:
         g = self.grid
         umax = max(np.abs(self.u).max(), 1e-12)
         vmax = max(np.abs(self.v).max(), 1e-12)
-        nu_max = float(self.nu_eff.max()) if self.variable_viscosity else self.nu
+        if self.variable_density:
+            nu_max = float((self.nu_eff / self.rho)[self.grid.fluid].max())
+        else:
+            nu_max = float(self.nu_eff.max()) if self.variable_viscosity else self.nu
         dt_visc = 0.5 / (nu_max * (1.0 / g.dx**2 + 1.0 / g.dy**2))
         dt_conv = min(g.dx / umax, g.dy / vmax)
         if self.scheme == "ab2":
@@ -238,7 +244,10 @@ class Simulation:
         if self.scheme == "euler":
             cfl = max(umax * dt / g.dx, vmax * dt / g.dy)
             return float(min(1.0, max(0.05, 1.2 * cfl)))
-        nu_ref = float(self.nu_eff[self.grid.fluid].min()) if self.variable_viscosity else self.nu
+        if self.variable_density:
+            nu_ref = float((self.nu_eff / self.rho)[self.grid.fluid].min())
+        else:
+            nu_ref = float(self.nu_eff[self.grid.fluid].min()) if self.variable_viscosity else self.nu
         re_cell = max(umax * g.dx, vmax * g.dy) / nu_ref
         return float(min(1.0, max(0.05, 0.015 * re_cell)))
 
@@ -254,7 +263,16 @@ class Simulation:
         if self.periodic:
             F[0, :] = F[nx, :]
         div = (F[1:, 1:-1] - F[:-1, 1:-1]) / dx + (G[1:-1, 1:] - G[1:-1, :-1]) / dy
-        p_int = self.pressure.solve(div / dt)
+        if self.variable_density:
+            # Flächenkoeffizienten 1/rho (harmonisch gemittelte Dichte wäre die Alternative)
+            bx = 2.0 / (self.rho[:-1, :] + self.rho[1:, :])  # (nx+1, ny+2)
+            by = 2.0 / (self.rho[:, :-1] + self.rho[:, 1:])  # (nx+2, ny+1)
+            if self.periodic:
+                bx[nx, :] = 2.0 / (self.rho[nx, :] + self.rho[1, :])
+            p_int = self.pressure.solve_variable(div / dt, bx[:, 1:-1], by[1:-1, :])
+        else:
+            bx = by = None
+            p_int = self.pressure.solve(div / dt)
         p = self.p
         p[:] = 0.0
         p[1:-1, 1:-1] = p_int
@@ -262,31 +280,44 @@ class Simulation:
             p[0, :] = p[nx, :]
             p[nx + 1, :] = p[1, :]
 
+        def cx(sl):
+            return 1.0 if bx is None else bx[sl]
+
+        def cy(sl):
+            return 1.0 if by is None else by[sl]
+
         # Innere Fluidflächen
         uf = self.u_fluid[1:nx, 1:ny + 1]
-        corr = F[1:nx, 1:ny + 1] - dt * (p[2:nx + 1, 1:ny + 1] - p[1:nx, 1:ny + 1]) / dx
+        corr = F[1:nx, 1:ny + 1] - dt * cx((slice(1, nx), slice(1, ny + 1))) * (
+            p[2:nx + 1, 1:ny + 1] - p[1:nx, 1:ny + 1]) / dx
         self.u[1:nx, 1:ny + 1] = np.where(uf, corr, F[1:nx, 1:ny + 1])
         vf = self.v_fluid[1:nx + 1, 1:ny]
-        corr = G[1:nx + 1, 1:ny] - dt * (p[1:nx + 1, 2:ny + 1] - p[1:nx + 1, 1:ny]) / dy
+        corr = G[1:nx + 1, 1:ny] - dt * cy((slice(1, nx + 1), slice(1, ny))) * (
+            p[1:nx + 1, 2:ny + 1] - p[1:nx + 1, 1:ny]) / dy
         self.v[1:nx + 1, 1:ny] = np.where(vf, corr, G[1:nx + 1, 1:ny])
 
         if self.periodic:
             uf = self.u_fluid[nx, 1:ny + 1]
-            corr = F[nx, 1:ny + 1] - dt * (p[1, 1:ny + 1] - p[nx, 1:ny + 1]) / dx
+            corr = F[nx, 1:ny + 1] - dt * cx((nx, slice(1, ny + 1))) * (
+                p[1, 1:ny + 1] - p[nx, 1:ny + 1]) / dx
             self.u[nx, 1:ny + 1] = np.where(uf, corr, F[nx, 1:ny + 1])
             self.u[0, :] = self.u[nx, :]
             return
 
         # Randflächen: vorgegebene Geschwindigkeit, an Ausströmrändern mit Druckkorrektur
         d = self.pressure.dirichlet
-        self.u[0, 1:ny + 1] = np.where(d["left"], F[0, 1:ny + 1] - 2 * dt * p[1, 1:ny + 1] / dx,
-                                       F[0, 1:ny + 1])
-        self.u[nx, 1:ny + 1] = np.where(d["right"], F[nx, 1:ny + 1] + 2 * dt * p[nx, 1:ny + 1] / dx,
-                                        F[nx, 1:ny + 1])
-        self.v[1:nx + 1, 0] = np.where(d["bottom"], G[1:nx + 1, 0] - 2 * dt * p[1:nx + 1, 1] / dy,
-                                       G[1:nx + 1, 0])
-        self.v[1:nx + 1, ny] = np.where(d["top"], G[1:nx + 1, ny] + 2 * dt * p[1:nx + 1, ny] / dy,
-                                        G[1:nx + 1, ny])
+        self.u[0, 1:ny + 1] = np.where(
+            d["left"], F[0, 1:ny + 1] - 2 * dt * cx((0, slice(1, ny + 1))) * p[1, 1:ny + 1] / dx,
+            F[0, 1:ny + 1])
+        self.u[nx, 1:ny + 1] = np.where(
+            d["right"], F[nx, 1:ny + 1] + 2 * dt * cx((nx, slice(1, ny + 1))) * p[nx, 1:ny + 1] / dx,
+            F[nx, 1:ny + 1])
+        self.v[1:nx + 1, 0] = np.where(
+            d["bottom"], G[1:nx + 1, 0] - 2 * dt * cy((slice(1, nx + 1), 0)) * p[1:nx + 1, 1] / dy,
+            G[1:nx + 1, 0])
+        self.v[1:nx + 1, ny] = np.where(
+            d["top"], G[1:nx + 1, ny] + 2 * dt * cy((slice(1, nx + 1), ny)) * p[1:nx + 1, ny] / dy,
+            G[1:nx + 1, ny])
 
     # ------------------------------------------------------------------ #
     # Ein Zeitschritt
@@ -297,7 +328,7 @@ class Simulation:
         self._apply_bc()
         for m in self.models:
             m.pre_momentum(self)
-        if self.variable_viscosity:
+        if self.variable_viscosity and not self.variable_density:
             np.add(self.nu, self.nu_t, out=self.nu_eff)
 
         dt = self.compute_dt()
@@ -305,7 +336,8 @@ class Simulation:
 
         kernels.momentum_tendencies(self.u, self.v, g.fluid, g.nx, g.ny, g.dx, g.dy,
                                     self.nu_eff, self.variable_viscosity, self.gamma,
-                                    self.periodic, self.hu, self.hv)
+                                    self.periodic, self.hu, self.hv, self.rho,
+                                    self.variable_density)
         for m in self.models:
             m.momentum_source(self, self.hu, self.hv)
 

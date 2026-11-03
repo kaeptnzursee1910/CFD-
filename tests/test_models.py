@@ -130,3 +130,33 @@ def test_add_scalar_with_band_and_sst_on_step():
     c = case.sim.scalars["c"].cell()
     assert np.nanmax(c) <= 1 + 1e-9 and np.nanmin(c) >= -1e-9
     assert np.nanmax(c) > 0.5
+
+
+def test_vof_hydrostatic_rest():
+    from cfd2d.vof import VOF
+
+    g = Grid(20, 20, 0.2, 0.2)
+    X, Y = g.cell_centers()
+    alpha0 = (Y < 0.1).astype(float)
+    bcs = {s: BC("noslip") for s in ("left", "right", "bottom")}
+    bcs["top"] = BC("outflow")
+    vof = VOF(alpha0, sigma=0.0)
+    sim = Simulation(g, bcs, nu=1e-6, models=[vof])
+    sim.run(0.2, verbose=False)
+    uc, vc = sim.cell_velocity()
+    assert np.nanmax(np.hypot(uc, vc)) < 1e-6  # keine Scheinströmungen
+    p_bottom = sim.cell_pressure()[10, 0]
+    assert p_bottom == pytest.approx(1000 * 9.81 * (0.1 - 0.005), rel=0.02)
+    assert abs(vof.volume() / vof.volume0 - 1) < 1e-10
+
+
+def test_dam_break_runs_conserves_volume():
+    case = cases.dam_break(n=32, obstacle=True, t_end=0.15)
+    case.sim.run(case.t_end, verbose=False)
+    vof = case.sim.model("multiphase")
+    assert abs(vof.volume() / vof.volume0 - 1) < 1e-3
+    a = vof.alpha[1:-1, 1:-1]
+    assert a.min() >= 0 and a.max() <= 1
+    # die Front hat sich nach rechts bewegt
+    assert case.sim.history.extra["front_x"][-1] > case.info["a"] * 1.3
+    assert case.sim.max_divergence() < 1e-8

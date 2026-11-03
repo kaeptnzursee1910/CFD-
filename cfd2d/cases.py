@@ -278,6 +278,38 @@ def turbulent_channel(re_tau: float = 180.0, ny: int | None = None, y_plus_1: fl
 
 
 # ---------------------------------------------------------------------- #
+# 9) Zweiphasenströmung: Dammbruch (VOF)
+# ---------------------------------------------------------------------- #
+def dam_break(n: int = 96, size: float = 0.584, column_width: float = 0.1461,
+              column_height: float = 0.292, obstacle: bool = True, sigma: float = 0.07,
+              t_end: float = 1.0, open_top: bool = True, **num) -> Case:
+    """Dammbruch in einem quadratischen Becken (SI-Einheiten, Wasser und Luft).
+
+    Geometrie wie im klassischen Experiment von Martin & Moyce (1952) bzw. dem
+    bekannten Dammbruch-Lehrbeispiel: Wassersäule 0.1461 m x 0.292 m an der linken
+    Wand, optional ein kleines Hindernis (0.024 m x 0.048 m) am Boden in der Mitte.
+    Oben ist das Becken offen (Atmosphäre, p = 0) oder geschlossen.
+    """
+    from .vof import VOF
+
+    grid = Grid(n, n, size, size)
+    if obstacle:
+        x0 = 0.5 * size - 0.012
+        grid.add_obstacle(geometry.rectangle(grid, x0, 0.0, x0 + 0.024, 0.048))
+    X, Y = grid.cell_centers()
+    alpha0 = ((X <= column_width) & (Y <= column_height)).astype(float)
+    bcs = {"left": BC("noslip"), "right": BC("noslip"), "bottom": BC("noslip"),
+           "top": BC("outflow") if open_top else BC("noslip")}
+    vof = VOF(alpha0, sigma=sigma)
+    num.setdefault("gamma", 0.5)
+    sim = Simulation(grid, bcs, nu=1e-6, models=[vof], **_numerics(num))
+    info = {"a": column_width, "h0": column_height, "g": 9.81}
+    U = np.sqrt(2 * 9.81 * column_height)
+    return Case("dam_break", "Dammbruch (VOF, Wasser/Luft)", sim, t_end, None, U, column_width,
+                float(U * column_width / 1e-6), info)
+
+
+# ---------------------------------------------------------------------- #
 # Zusatzphysik für beliebige Fälle
 # ---------------------------------------------------------------------- #
 def add_turbulence(case: Case, model: str = "kOmegaSST", **kw) -> Case:
@@ -345,4 +377,5 @@ CASES = {
     "heated_cavity": heated_cavity,
     "rayleigh_benard": rayleigh_benard,
     "turbulent_channel": turbulent_channel,
+    "dam_break": dam_break,
 }

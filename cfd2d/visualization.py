@@ -83,7 +83,8 @@ def available_fields(sim) -> dict:
     for m in getattr(sim, "models", []):
         for k, (label, _) in m.fields(sim).items():
             out[k] = label
-    if getattr(sim, "variable_viscosity", False) and "nu_t" not in out:
+    if (getattr(sim, "variable_viscosity", False) and not getattr(sim, "variable_density", False)
+            and "nu_t" not in out):
         out["nu_t"] = "Turbulente Viskosität ν_t"
     return out
 

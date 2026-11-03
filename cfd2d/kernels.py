@@ -42,7 +42,8 @@ LIMITER_NAMES_DE = {
 
 
 @njit(cache=True)
-def momentum_tendencies(u, v, fluid, nx, ny, dx, dy, nu, variable, gamma, periodic, hu, hv):
+def momentum_tendencies(u, v, fluid, nx, ny, dx, dy, nu, variable, gamma, periodic, hu, hv,
+                        rho, var_density):
     """Explizite Terme der Impulsgleichungen (Konvektion und Diffusion).
 
     Berechnet auf allen Fluidflächen ``hu = Diffusion(u) - d(uu)/dx - d(uv)/dy``
@@ -60,6 +61,10 @@ def momentum_tendencies(u, v, fluid, nx, ny, dx, dy, nu, variable, gamma, period
     periodic
         Periodizität in x: u-Fläche ``nx`` ist identisch mit Fläche 0, die
         Geisterspalten 0 und nx+1 entsprechen den Zellen nx und 1.
+
+    var_density
+        Variable Dichte (Zweiphasenströmung): ``nu`` enthält dann die dynamische
+        Viskosität mu, und der Diffusionsterm wird durch die Flächendichte geteilt.
     """
     idx2 = 1.0 / (dx * dx)
     idy2 = 1.0 / (dy * dy)
@@ -98,6 +103,8 @@ def momentum_tendencies(u, v, fluid, nx, ny, dx, dy, nu, variable, gamma, period
                     - nu_s * ((uc - us) * idy + (v[i + 1, j - 1] - v[i, j - 1]) * idx))
             else:
                 diff = nu0 * ((ue - 2.0 * uc + uw) * idx2 + (un - 2.0 * uc + us) * idy2)
+            if var_density:
+                diff /= 0.5 * (rho[i, j] + rho[i + 1, j])
 
             a_e = 0.5 * (uc + ue)
             a_w = 0.5 * (uw + uc)
@@ -132,6 +139,8 @@ def momentum_tendencies(u, v, fluid, nx, ny, dx, dy, nu, variable, gamma, period
                     - nu_w * ((vc - vw) * idx + (u[i - 1, j + 1] - u[i - 1, j]) * idy))
             else:
                 diff = nu0 * ((ve - 2.0 * vc + vw) * idx2 + (vn - 2.0 * vc + vs) * idy2)
+            if var_density:
+                diff /= 0.5 * (rho[i, j] + rho[i, j + 1])
 
             b_n = 0.5 * (vc + vn)
             b_s = 0.5 * (vs + vc)
@@ -392,7 +401,7 @@ def warmup() -> None:
     hu = np.zeros_like(u)
     hv = np.zeros_like(v)
     nu = np.full((nx + 2, ny + 2), 0.01)
-    momentum_tendencies(u, v, fl, nx, ny, 0.1, 0.1, nu, False, 0.5, False, hu, hv)
+    momentum_tendencies(u, v, fl, nx, ny, 0.1, 0.1, nu, False, 0.5, False, hu, hv, nu, False)
     obstacle_bc(u, v, fl, nx, ny, False)
     phi = np.zeros((nx + 2, ny + 2))
     out = np.zeros_like(phi)

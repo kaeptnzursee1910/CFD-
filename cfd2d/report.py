@@ -495,10 +495,46 @@ def report_turbulent_channel(case, outdir: Path) -> dict:
     return res
 
 
+def report_dam_break(case, outdir: Path) -> dict:
+    plt = _plt()
+    sim = case.sim
+    h = sim.history.extra
+    a, h0, g = case.info["a"], case.info["h0"], case.info["g"]
+    t = np.asarray(sim.history.t)
+    T = t * np.sqrt(2 * g / a)
+    Z = np.asarray(h["front_x"]) / a
+    H = np.asarray(h["hoehe_links"]) / h0
+    res = {"volumenfehler_rel_ende": float(h["volumenfehler_rel"][-1]),
+           "front_bei_T1": float(np.interp(1.0, T, Z)), "front_bei_T2": float(np.interp(2.0, T, Z)),
+           "hinweis": "Z = x_Front/a, T = t*sqrt(2g/a); Ritter (Flachwasser, reibungsfrei) ist eine obere Schranke"}
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
+    axes[0].plot(T, Z, label="Simulation")
+    Tr = np.linspace(0, T.max(), 50)
+    axes[0].plot(Tr, 1 + np.sqrt(2 * h0 / a) * Tr, "k--", lw=1, label="Ritter: Z = 1 + sqrt(2 h0/a) T")
+    axes[0].set_ylim(0, max(Z.max() * 1.2, 1.5))
+    axes[0].set_xlabel("T = t sqrt(2g/a)")
+    axes[0].set_ylabel("Z = x_Front / a")
+    axes[0].set_title("Position der Wasserfront")
+    axes[1].plot(T, H)
+    axes[1].set_xlabel("T")
+    axes[1].set_ylabel("H / h0")
+    axes[1].set_title("Wasserhöhe an der linken Wand")
+    axes[2].plot(t, np.asarray(h["volumenfehler_rel"]))
+    axes[2].set_xlabel("t [s]")
+    axes[2].set_title("Relativer Volumenfehler der Wasserphase")
+    for ax in axes:
+        ax.grid(True, alpha=0.3)
+    axes[0].legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(outdir / "dammbruch.png", dpi=130)
+    plt.close(fig)
+    return res
+
+
 REPORTS = {"cavity": report_cavity, "cylinder": report_cylinder, "channel": report_channel,
            "step": report_step, "custom": report_custom,
            "heated_cavity": report_heated_cavity, "rayleigh_benard": report_rayleigh_benard,
-           "turbulent_channel": report_turbulent_channel}
+           "turbulent_channel": report_turbulent_channel, "dam_break": report_dam_break}
 
 
 def _jsonable(o):

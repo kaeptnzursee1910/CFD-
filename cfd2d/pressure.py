@@ -55,6 +55,7 @@ class PressureSolver:
 
         # Kopplungen in x-Richtung: Zelle (i, j) mit (i+1, j)
         both_x = fluid[:-1, :] & fluid[1:, :]
+        self._both_x = both_x
         a = idx[:-1, :][both_x]
         b = idx[1:, :][both_x]
         rows += [a, b]
@@ -65,6 +66,7 @@ class PressureSolver:
 
         # Kopplungen in y-Richtung: Zelle (i, j) mit (i, j+1)
         both_y = fluid[:, :-1] & fluid[:, 1:]
+        self._both_y = both_y
         a = idx[:, :-1][both_y]
         b = idx[:, 1:][both_y]
         rows += [a, b]
@@ -75,8 +77,10 @@ class PressureSolver:
 
         # Periodizität in x: Zelle nx koppelt mit Zelle 1
         self.periodic = boundary.periodic
+        self._both_p = None
         if self.periodic:
             both_p = fluid[-1, :] & fluid[0, :]
+            self._both_p = both_p
             a = idx[-1, :][both_p]
             b = idx[0, :][both_p]
             rows += [a, b]
@@ -110,6 +114,7 @@ class PressureSolver:
         labels[fluid] = comp_of + 1
         self.labels = labels
         self.neumann_components = []
+        self._pinned = []
         dir_comps = set(np.unique(labels[has_dir & fluid]).tolist())
         for c in range(1, ncomp + 1):
             if c not in dir_comps:
@@ -117,6 +122,7 @@ class PressureSolver:
                 fi, fj = np.argwhere(idx == first)[0]
                 diag[fi, fj] += dx2
                 self.neumann_components.append(c)
+                self._pinned.append((fi, fj))
 
         d = diag[fluid]
         all_rows = np.concatenate(rows + [np.arange(n)])
@@ -124,6 +130,8 @@ class PressureSolver:
         all_vals = np.concatenate(vals + [d])
         A = sp.csc_matrix((all_vals, (all_rows, all_cols)), shape=(n, n))
         self.A = A
+        self._rows = all_rows
+        self._cols = all_cols
 
         if method == "direct":
             self._lu = spla.splu(A, permc_spec="COLAMD")
@@ -173,5 +181,64 @@ class PressureSolver:
         if self.neumann_components:
             for c in self.neumann_components:
                 m = self.labels == c
+                p[m] -= p[m].mean()
+        return p
+
+    def solve_variable(self, rhs: np.ndarray, bx: np.ndarray, by: np.ndarray) -> np.ndarray:
+        """Löst ``div(b grad p) = rhs`` mit Flächenkoeffizienten ``b = 1/rho`` (variable Dichte).
+
+        bx: Form (nx+1, ny), Koeffizient auf den x-Flächen (Index i = Fläche links von Zelle i).
+        by: Form (nx, ny+1), Koeffizient auf den y-Flächen.
+        Die Matrix wird in jedem Aufruf neu aufgebaut und direkt gelöst.
+        """
+        g = self.grid
+        nx, ny = g.nx, g.ny
+        dx2 = 1.0 / g.dx**2
+        dy2 = 1.0 / g.dy**2
+        fluid = self.fluid
+        diag = np.zeros((nx, ny))
+        vals = []
+
+        cxi = bx[1:nx, :] * dx2  # innere x-Flächen zwischen Zelle i und i+1
+        c = cxi[self._both_x]
+        vals += [-c, -c]
+        diag[:-1, :][self._both_x] += c
+        diag[1:, :][self._both_x] += c
+
+        cyi = by[:, 1:ny] * dy2
+        c = cyi[self._both_y]
+        vals += [-c, -c]
+        diag[:, :-1][self._both_y] += c
+        diag[:, 1:][self._both_y] += c
+
+        if self._both_p is not None:
+            c = (bx[nx, :] * dx2)[self._both_p]
+            vals += [-c, -c]
+            diag[-1, :][self._both_p] += c
+            diag[0, :][self._both_p] += c
+
+        d = self.dirichlet
+        diag[0, :][d["left"]] += 2 * dx2 * bx[0, :][d["left"]]
+        diag[-1, :][d["right"]] += 2 * dx2 * bx[nx, :][d["right"]]
+        diag[:, 0][d["bottom"]] += 2 * dy2 * by[:, 0][d["bottom"]]
+        diag[:, -1][d["top"]] += 2 * dy2 * by[:, ny][d["top"]]
+        for fi, fj in self._pinned:
+            diag[fi, fj] += dx2 * max(float(bx.max()), 1e-30)
+
+        all_vals = np.concatenate(vals + [diag[fluid]])
+        A = sp.csc_matrix((all_vals, (self._rows, self._cols)), shape=(self.n, self.n))
+
+        b = rhs[fluid].astype(float)
+        if self.neumann_components:
+            lab = self.labels[fluid]
+            for comp in self.neumann_components:
+                m = lab == comp
+                b[m] -= b[m].mean()
+        x = spla.spsolve(A, -b)
+        p = np.zeros(fluid.shape)
+        p[fluid] = x
+        if self.neumann_components:
+            for comp in self.neumann_components:
+                m = self.labels == comp
                 p[m] -= p[m].mean()
         return p
